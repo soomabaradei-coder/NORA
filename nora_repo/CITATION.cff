@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: "NORA: a nanopore oncology reasoning agent for evidence validation in cell-free RNA liquid biopsy"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Albaradei
+    given-names: Somayah
+    affiliation: "King Abdulaziz University, Jeddah, Saudi Arabia"
+repository-code: "https://github.com/somayahalbaradei/nora"
+license: MIT
+year: 2026
+keywords:
+  - cell-free RNA
+  - liquid biopsy
+  - nanopore sequencing
+  - batch effects
+  - LLM agents
+  - evidence validation
