@@ -695,6 +695,188 @@ def check_reproducibility(variable, grouping, stratum=None, n_splits=200, seed=0
                            "depends on which samples are included. Within-cohort split-half "
                            "is a weak test; an independent cohort remains necessary."))}
 
+
+REFERENCE = None
+
+def fit_reference(technical_features, provenance, biological_features=None,
+                  healthy_group=None, group_col=None, out=None):
+    """Build an Evidence Reference Model from a cohort.
+
+    A reference is only valid for the experimental conditions that produced it,
+    exactly as a clinical reference interval is valid only for the assay that
+    established it. `provenance` is therefore REQUIRED and is recorded with the
+    distributions:
+
+        {"platform": "PromethION", "protocol": "cDNA",
+         "library_kit": "SQK-NBD-114.24", "flowcell": "R10.4",
+         "basecaller": "dorado 0.7", "reference_genome": "GRCh38",
+         "annotation": "GENCODE 39", "aligner": "minimap2 2.31"}
+
+    Technical features take their reference from ALL samples: adequacy is a
+    property of the assay. Biological features take theirs from the healthy
+    group only: elevation is defined against health."""
+    import numpy as np, json as _j
+    global REFERENCE
+    if DATA is None: return {"error": "no cohort loaded"}
+    need = ["protocol", "flowcell"]
+    missing = [k for k in need if not provenance.get(k)]
+    if missing:
+        return {"error": f"provenance must record {missing}. A reference without "
+                         "provenance cannot be applied to any sample, because "
+                         "there is no way to know whether it applies."}
+    ref = {"provenance": dict(provenance), "n_cohort": int(len(DATA)),
+           "technical": {}, "biological": {}}
+    for f in technical_features:
+        if f not in DATA.columns: return {"error": f"no such column: {f}"}
+        v = DATA[f].dropna().values.astype(float)
+        ref["technical"][f] = {"source": "all samples", "n": int(len(v)),
+                               "median": float(np.median(v)),
+                               "p05": float(np.percentile(v, 5)),
+                               "p95": float(np.percentile(v, 95)),
+                               "min_observed": float(v.min()), "max_observed": float(v.max())}
+    if biological_features:
+        if not (healthy_group and group_col):
+            return {"error": "biological_features require healthy_group and group_col"}
+        sub = DATA[DATA[group_col] == healthy_group]
+        if len(sub) < 5:
+            return {"error": f"only {len(sub)} healthy samples; too few for a reference"}
+        for f in biological_features:
+            v = sub[f].dropna().values.astype(float)
+            ref["biological"][f] = {"source": f"{group_col}=={healthy_group}", "n": int(len(v)),
+                                    "median": float(np.median(v)),
+                                    "p05": float(np.percentile(v, 5)),
+                                    "p95": float(np.percentile(v, 95)),
+                                    "sd": float(v.std(ddof=1))}
+    REFERENCE = ref
+    if out: _j.dump(ref, open(out, "w"), indent=1); ref["saved_to"] = out
+    ref["note"] = (f"Evidence Reference Model built from n={ref['n_cohort']} under "
+                   f"{provenance.get('protocol')} / {provenance.get('flowcell')}. "
+                   "It applies ONLY to samples produced under compatible conditions. "
+                   "check_sample enforces this.")
+    return ref
+
+
+# Which provenance mismatches invalidate a reference, and which merely warn.
+_FATAL = {
+  "protocol":  "direct RNA and cDNA measure different molecules; base modifications, "
+               "strand orientation and length distributions are not comparable",
+  "flowcell":  "chemistry generations differ in accuracy and length; a Q or length "
+               "reference from one does not describe the other",
+}
+_WARN = {
+  "library_kit":      "kit affects yield and fragment recovery",
+  "basecaller":       "basecaller version shifts the quality distribution",
+  "platform":         "throughput differs; per-sample yield references may not transfer",
+  "annotation":       "annotation version changes which features are detectable",
+  "reference_genome": "assembly differences affect mapping",
+  "aligner":          "aligner and parameters affect mapping rate",
+}
+
+
+def _norm(v):
+    s = str(v or "").lower().strip()
+    if "direct" in s and "rna" in s: return "direct_rna"
+    if "cdna" in s: return "cdna"
+    if s.startswith("r9"):  return "r9"
+    if s.startswith("r10"): return "r10"
+    return s
+
+
+def check_provenance(sample_provenance, reference=None):
+    """Does this reference apply to this sample at all? Runs before any value is
+    compared. A reference built under different conditions cannot judge a
+    sample, however good the sample is."""
+    import json as _j
+    ref = reference or REFERENCE
+    if isinstance(ref, str): ref = _j.load(open(ref))
+    if not ref: return {"error": "no reference; call fit_reference first"}
+    rp = ref.get("provenance", {})
+    fatal, warn, unknown = [], [], []
+    for k, why in _FATAL.items():
+        a, b = _norm(rp.get(k)), _norm(sample_provenance.get(k))
+        if not b: unknown.append(f"{k} not stated for the sample")
+        elif a and a != b:
+            fatal.append({"field": k, "reference": rp.get(k), "sample": sample_provenance.get(k),
+                          "why": why})
+    for k, why in _WARN.items():
+        a, b = _norm(rp.get(k)), _norm(sample_provenance.get(k))
+        if a and b and a != b:
+            warn.append({"field": k, "reference": rp.get(k), "sample": sample_provenance.get(k),
+                         "why": why})
+    ok = not fatal
+    return {"applicable": ok,
+            "reference_conditions": rp, "sample_conditions": dict(sample_provenance),
+            "incompatible": fatal, "differences": warn, "unstated": unknown,
+            "verdict": ("Reference does not apply to this sample. "
+                        + "; ".join(f"{f['field']}: reference {f['reference']}, sample "
+                                    f"{f['sample']} ({f['why']})" for f in fatal)
+                        + ". Build a reference under matching conditions, or state that "
+                          "no reference exists for this assay."
+                        if fatal else
+                        "Reference applies." + (f" {len(warn)} non-fatal difference(s); "
+                        "interpret with caution." if warn else "")
+                        + (f" Unstated: {unknown}. Absent provenance is assumed compatible, "
+                           "which is an assumption, not a finding." if unknown else ""))}
+
+
+def check_sample(values, sample_provenance=None, reference=None):
+    """Judge ONE sample against the Evidence Reference Model. Clinical mode: not
+    whether a finding is real, but whether THIS result is trustworthy.
+
+    Compatibility is checked FIRST. A reference built under different conditions
+    cannot judge this sample, however good the sample is."""
+    import numpy as np, json as _j
+    ref = reference or REFERENCE
+    if isinstance(ref, str): ref = _j.load(open(ref))
+    if not ref: return {"error": "no reference; call fit_reference first"}
+    if sample_provenance is not None:
+        comp = check_provenance(sample_provenance, ref)
+        if not comp.get("applicable"):
+            return {"verdict": "NOT_APPLICABLE", "provenance_check": comp,
+                    "action": "DO NOT COMPARE. " + comp["verdict"],
+                    "why": "The reference describes a different assay. Judging this "
+                           "sample against it would produce a confident verdict about "
+                           "the wrong experiment."}
+    else:
+        comp = {"applicable": None,
+                "verdict": "No sample provenance supplied. Applicability is ASSUMED, "
+                           "not established."}
+    flags, notes = [], []
+    for f, v in values.items():
+        v = float(v)
+        if f in ref["technical"]:
+            r = ref["technical"][f]
+            if v < r["p05"]:
+                flags.append({"feature": f, "value": v, "severity": "INVALID",
+                              "reason": f"below the 5th percentile of the cohort "
+                                        f"({v:.0f} vs p05 {r['p05']:.0f}); the assay "
+                                        f"did not work on this sample"})
+            elif v > r["p95"]:
+                notes.append(f"{f} above the 95th percentile ({v:.0f} vs {r['p95']:.0f}); "
+                             "unusually high, not disqualifying")
+        elif f in ref["biological"]:
+            r = ref["biological"][f]
+            z = (v - r["median"]) / (r["sd"] + 1e-9)
+            pos = ("elevated" if v > r["p95"] else "reduced" if v < r["p05"] else "within")
+            notes.append(f"{f} = {v:.2f}, {pos} the healthy reference "
+                         f"({r['p05']:.2f}-{r['p95']:.2f}), z={z:+.2f}")
+        else:
+            notes.append(f"{f}: no reference; cannot be judged")
+    bad = [f for f in flags if f["severity"] == "INVALID"]
+    verdict = "INVALID" if bad else ("BORDERLINE" if flags else "VALID")
+    return {"verdict": verdict, "reference_n": ref["n_cohort"],
+            "reference_conditions": ref.get("provenance", {}),
+            "provenance_check": comp.get("verdict"),
+            "failures": flags, "observations": notes,
+            "action": ("DO NOT REPORT A RESULT. Repeat the draw. A low-yield sample "
+                       "produces a confident answer that reflects the assay, not the "
+                       "patient." if verdict == "INVALID" else
+                       "Sample is within reference. This licenses reporting a result; "
+                       "it does not validate the model that produces it."),
+            "caveat": (f"The reference derives from n={ref['n_cohort']}. Percentiles "
+                       "from a small cohort are themselves uncertain, and a sample may "
+                       "be unusual for reasons the reference never observed.")}
+
 TOOLS = {"list_variables": list_variables, "derive_variable": derive_variable,
          "describe": describe, "crosstab": crosstab,
          "test_association": test_association, "condition_and_retest": condition_and_retest,
@@ -707,7 +889,10 @@ TOOLS = {"list_variables": list_variables, "derive_variable": derive_variable,
          "search_literature": search_literature,
          "check_claim_against_literature": check_claim_against_literature,
          "effect_size": effect_size,
-         "check_reproducibility": check_reproducibility}
+         "check_reproducibility": check_reproducibility,
+         "fit_reference": fit_reference,
+         "check_sample": check_sample,
+         "check_provenance": check_provenance}
 
 SCHEMA = [
  {"name": "list_variables", "description": "List every variable in the cohort with types, level counts, and example values. Call this first.",
@@ -748,6 +933,12 @@ SCHEMA = [
   "input_schema": {"type": "object", "properties": {"variable": {"type": "string"}, "grouping": {"type": "string"}}, "required": ["variable", "grouping"]}},
  {"name": "check_reproducibility", "description": "Is the finding reproducible or an artefact of this sample? Repeated split-half testing. Pass `stratum` to keep halves balanced on a technical axis.",
   "input_schema": {"type": "object", "properties": {"variable": {"type": "string"}, "grouping": {"type": "string"}, "stratum": {"type": "string"}}, "required": ["variable", "grouping"]}},
+ {"name": "fit_reference", "description": "Build an Evidence Reference Model from a cohort. Provenance (protocol, flowcell, kit, basecaller) is REQUIRED and is recorded with the distributions, because a reference is only valid for the conditions that produced it.",
+  "input_schema": {"type": "object", "properties": {"technical_features": {"type": "array", "items": {"type": "string"}}, "provenance": {"type": "object"}, "biological_features": {"type": "array", "items": {"type": "string"}}, "healthy_group": {"type": "string"}, "group_col": {"type": "string"}}, "required": ["technical_features", "provenance"]}},
+ {"name": "check_provenance", "description": "Does this reference apply to this sample at all? Runs before any value is compared. Protocol and flowcell mismatches are disqualifying.",
+  "input_schema": {"type": "object", "properties": {"sample_provenance": {"type": "object"}}, "required": ["sample_provenance"]}},
+ {"name": "check_sample", "description": "Judge ONE sample against the Evidence Reference Model. Compatibility is checked first. Returns NOT_APPLICABLE, INVALID, BORDERLINE or VALID.",
+  "input_schema": {"type": "object", "properties": {"values": {"type": "object"}, "sample_provenance": {"type": "object"}}, "required": ["values"]}},
  {"name": "simulate_null", "description": "Simulate AUROC on PURE NOISE at a given design, with feature selection inside or outside the CV loop. Tells you what chance looks like.",
   "input_schema": {"type": "object", "properties": {"n_per_group": {"type": "array", "items": {"type": "integer"}}, "n_features": {"type": "integer"}, "k_selected": {"type": "integer"}, "leaky": {"type": "boolean"}}, "required": ["n_per_group"]}},
 ]

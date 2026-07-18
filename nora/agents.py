@@ -64,7 +64,8 @@ STAGES = [
       claim="the samples are usable",
       q=("Are these samples usable, and does technical structure drive detection? "
          "Distinguish a yield problem from a quality problem: they have different causes."),
-      tools=["describe","test_association","detection_vs_technical","list_variables"]),
+      tools=["describe","test_association","detection_vs_technical","list_variables",
+             "fit_reference","check_sample"]),
  dict(id="validity", n="4 VALIDITY",
       claim="the effect is real",
       q=("Does any apparent biological effect survive conditioning on the technical "
@@ -86,7 +87,8 @@ STAGES = [
          "sufficiency, and a favourable decision curve is not permission: net benefit "
          "assumes a missed case and an unnecessary procedure are exchangeable. Check "
          "whether n supports the claim before accepting any performance figure."),
-      tools=["evidence_sufficiency","operating_points","decision_curve","describe"]),
+      tools=["evidence_sufficiency","operating_points","decision_curve","describe",
+             "check_sample"]),
 ]
 
 
