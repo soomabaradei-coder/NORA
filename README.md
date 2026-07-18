@@ -1,6 +1,6 @@
 # NORA — Nanopore Oncology Reasoning Agent
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/somayahalbaradei/nora/blob/main/notebooks/NORA_demo.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/soomabaradei-coder/NORA/blob/main/notebooks/NORA_demo.ipynb)
 
 **Somayah Albaradei** · King Abdulaziz University, Jeddah, Saudi Arabia
 
@@ -46,7 +46,7 @@ plate layout.
 ## Try it
 
 **Web app** — chat with NORA, or run any check without an API key:
-https://somayahalbaradei-nora.streamlit.app
+https://soomabaradei-coder-nora.streamlit.app
 
 **Colab** — reproduces the core finding in 30 seconds, no key, no install.
 
@@ -119,6 +119,6 @@ proxy for sequencing run, which the deposit does not record.
   title   = {{NORA}: a nanopore oncology reasoning agent for evidence
              validation in cell-free {RNA} liquid biopsy},
   year    = {2026},
-  url     = {https://github.com/somayahalbaradei/nora}
+  url     = {https://github.com/soomabaradei-coder/NORA}
 }
 ```
