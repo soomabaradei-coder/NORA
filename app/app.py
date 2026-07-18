@@ -25,6 +25,7 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 st.title("NORA")
+st.caption("Nanopore Oncology Reasoning Agent")
 st.markdown("##### Determines whether Nanopore sequencing evidence is sufficient "
             "to support a scientific or clinical claim.")
 
